@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq || true
-  apt-get install -y -qq libegl1 libgl1 libglib2.0-0 libgomp1 || echo "Could not apt-install MediaPipe libraries; continuing."
+  apt-get install -y -qq libegl1 libgl1 libgles2 libglib2.0-0 libgomp1 || echo "Could not apt-install MediaPipe libraries; continuing."
 fi
 
 python -m pip install --force-reinstall --no-deps "opencv-python-headless==5.0.0.93"

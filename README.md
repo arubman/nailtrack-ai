@@ -207,7 +207,7 @@ A new capture updates `observed_velocity_mm_day` only when the nail is longer th
 
 Deploy the **`backend/`** directory as the site root so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. Stack: Python 3.11, Linux. `startup.txt` runs `bash startup.sh`, which:
 
-1. Installs `libegl1`, `libgl1`, `libglib2.0-0`, and `libgomp1` when `apt-get` is available (MediaPipe's native library needs EGL).
+1. Installs `libegl1`, `libgl1`, `libgles2`, `libglib2.0-0`, and `libgomp1` when `apt-get` is available. MediaPipe's native library needs both EGL and `libGLESv2.so.2`.
 2. Reinstalls `opencv-python-headless==5.0.0.93` with `--no-deps` so MediaPipe's `opencv-contrib-python` dependency does not leave a GUI build on the import path.
 3. Starts gunicorn with a uvicorn worker on `${PORT:-8000}`.
 
@@ -275,4 +275,4 @@ python scripts/tune_thresholds.py ./sample_nails --csv metrics.csv
 - Add the Static Web Apps job to `.github/workflows/azure-deploy.yml`.
 - Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) with `scripts/tune_thresholds.py` once 10–20 real nail photos exist. The classical segmenter and spot detector will need that set; corrected masks are already stored beside the automatic ones.
 - Account-key SAS can later move to user-delegation SAS and a managed identity.
-- If the App Service image cannot run `apt-get` during startup, use a custom container that already has `libegl1`. `startup.sh` continues when apt fails and still forces the headless OpenCV reinstall.
+- If the App Service image cannot run `apt-get` during startup, use a custom container that already has `libegl1` and `libgles2`. `startup.sh` continues when apt fails and still forces the headless OpenCV reinstall.

@@ -1,7 +1,7 @@
 """FastAPI entrypoint.
 
 Calibration and capture analysis run the classical vision pipeline.
-Forecasts and the timeline are still later phases.
+The timeline serves history, today, and forecast horizons.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from app import __version__
 from app.api.routes_calibrate import router as calibrate_router
 from app.api.routes_captures import router as captures_router
 from app.api.routes_fingers import router as fingers_router
+from app.api.routes_forecast import router as forecast_router
 from app.api.routes_health import router as health_router
 from app.api.routes_me import router as me_router
 from app.api.routes_media import router as media_router
@@ -33,8 +34,8 @@ to log, then shows how a nail has changed and how it may grow.
 
 {NOT_MEDICAL_ADVICE}
 
-Accounts, calibration, capture measurement, the treatment log, and private
-image reads are served here. Forecasts are a later phase.
+Accounts, calibration, capture measurement, forecasts, the treatment log,
+and private image reads are served here. The React client is a later phase.
 """.strip()
 
 
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     application.include_router(health_router)
     application.include_router(me_router, prefix="/api/v1")
     application.include_router(fingers_router, prefix="/api/v1")
+    application.include_router(forecast_router, prefix="/api/v1")
     application.include_router(calibrate_router, prefix="/api/v1")
     application.include_router(captures_router, prefix="/api/v1")
     application.include_router(treatments_router, prefix="/api/v1")

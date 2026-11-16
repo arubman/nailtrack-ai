@@ -1,8 +1,8 @@
 """Treatment log scoped to the signed-in user.
 
-POST stores the row the user sent. It does not recompute forecasts; that
-side effect arrives with the Phase 3 forecaster. velocity_modifier is stored
-as the user set it.
+velocity_modifier is the user's own multiplier. Creating, updating, or
+deleting a row rebuilds that user's forecast cache so the timeline picks up
+the new alpha.
 """
 
 import uuid
@@ -10,10 +10,12 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.database import utcnow
 from app.deps import CurrentUser, DbSession
 from app.models import FingerCode, Treatment, TreatmentCategory
 from app.schemas import TreatmentCreate, TreatmentListResponse, TreatmentRead, TreatmentUpdate
+from app.services.forecaster import write_forecast_cache
 
 router = APIRouter(prefix="/treatments", tags=["treatments"])
 
@@ -32,6 +34,7 @@ def create_treatment(payload: TreatmentCreate, user: CurrentUser, db: DbSession)
     db.add(row)
     db.commit()
     db.refresh(row)
+    write_forecast_cache(db, user, get_settings())
     return row
 
 
@@ -94,6 +97,7 @@ def update_treatment(
     row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
+    write_forecast_cache(db, user, get_settings())
     return row
 
 
@@ -102,6 +106,7 @@ def delete_treatment(treatment_id: str, user: CurrentUser, db: DbSession) -> Non
     row = _owned_treatment(db, user.id, treatment_id)
     db.delete(row)
     db.commit()
+    write_forecast_cache(db, user, get_settings())
 
 
 def _owned_treatment(db: DbSession, user_id: object, treatment_id: str) -> Treatment:

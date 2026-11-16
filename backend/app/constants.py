@@ -26,9 +26,19 @@ TIMELINE_SLIDER_STEP_DAYS = 1
 # v_obs defaults and v_pop are configurable. The weights are the spec's blend.
 VELOCITY_OBSERVED_WEIGHT = 0.7
 VELOCITY_POPULATION_WEIGHT = 0.3
+# New interval rate vs the previous EMA. Trims (length decrease) are ignored.
+VELOCITY_EMA_NEW_WEIGHT = 0.3
+MIN_VELOCITY_INTERVAL_DAYS = 1.0
+# Product of active user-set modifiers, clamped so stacked regimens stay bounded.
+ALPHA_TX_MIN = 0.05
+ALPHA_TX_MAX = 5.0
 FREE_MARGIN_SYNTHESIS_BELOW_MM = 1.5
 NAIL_BED_PIN_FRACTION = 0.85
 LATERAL_TAPER_PER_DELTA = 0.02
+FORECAST_MESH_COLS = 16
+FORECAST_MESH_ROWS = 20
+# ECC below this correlation is treated as a failure to converge.
+ECC_MIN_CORRELATION = 0.45
 HOMOGRAPHY_RANSAC_REPROJ_THRESHOLD_PX = 3.0
 
 # Glare pixel test on the nail plate (HSV). The accept/reject cutoff is the

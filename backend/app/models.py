@@ -151,6 +151,8 @@ class FingerBaseline(Base):
     anchor_keypoints_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # {"space", "mean_rgb", "von_kries_gains", "target", "source", "patch_norm_bbox"}
     reference_white_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Last forecast summary (deltas, alpha, insights) rewritten when captures or treatments change.
+    forecast_cache_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     observed_velocity_mm_day: Mapped[float] = mapped_column(
         Float,
         nullable=False,

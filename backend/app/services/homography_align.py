@@ -93,7 +93,9 @@ def align_to_baseline(
         ecc_matrix, correlation = _ecc(baseline_bgr, capture_bgr, homography)
         # OpenCV sometimes returns instead of throwing when the correlation is
         # collapsing. That is the same failure as "iterations do not converge".
-        if not np.isfinite(correlation) or correlation < 0.45:
+        from app.constants import ECC_MIN_CORRELATION
+
+        if not np.isfinite(correlation) or correlation < ECC_MIN_CORRELATION:
             raise cv2.error("ECC correlation did not converge")
     except cv2.error:
         if affine is None and homography is None:

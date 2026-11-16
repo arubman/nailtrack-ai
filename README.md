@@ -4,7 +4,7 @@ NailTrack keeps a private photo record of fingernail growth, logs regimens you c
 
 NailTrack shares wellness observations only. It is not medical advice and does not diagnose, treat, or predict disease. A treatment's `velocity_modifier` is a number you set for your own forecast. The app does not claim that a supplement, oil, or coating changed your growth rate.
 
-Phases 1 and 2 are in the backend: accounts, private storage, and the classical vision pipeline (quality gate, card calibration, segmentation, homography, measurements). Forecasts and the React PWA come later. Vision results are computed, not stubbed.
+The backend covers accounts, private storage, classical vision, and forecasts. The React PWA is still ahead. Measurements and forecasts are computed, not stubbed.
 
 ## Layout
 
@@ -26,7 +26,8 @@ backend/
   alembic/              PostgreSQL (and SQLite) migrations
   scripts/tune_thresholds.py
   requirements.txt
-  startup.txt           gunicorn + uvicorn worker command for App Service
+  startup.sh            App Service boot: libegl1, headless OpenCV, gunicorn
+  startup.txt           `bash startup.sh` so Oryx picks the script up
   runtime.txt           python-3.11
 ```
 
@@ -146,6 +147,7 @@ Capture columns reserved for segmentation and correction (no model is trained ye
 | `POST` | `/api/v1/calibrate` | yes | ID-1 or manual card, white reference, Day-0 baseline |
 | `POST` | `/api/v1/captures/analyze` | yes | Quality gate, align, measure. 422 with reasons unless `force_save` |
 | `POST` | `/api/v1/captures/{id}/mask` | yes | Store a user-corrected 4-class mask and remeasure |
+| `GET` | `/api/v1/fingers/{code}/timeline` | yes | History (`t<0`), today (`t=0`), forecasts at +7, +14, +30, +60, +90 |
 | `GET` | `/api/v1/media/{key}` | yes | Local private-file read |
 
 `GET /api/v1/me` is the source of truth for the client HUD:
@@ -162,7 +164,7 @@ Any response that carries wellness insights includes `disclaimer`. `WellnessInsi
 
 Treatment `velocity_modifier` must be greater than 0 and at most 5. The default is 1. Omitting it does not imply the app measured an effect.
 
-`POST /api/v1/treatments` does **not** recompute forecasts. That side effect waits for Phase 3, which should call the same endpoint rather than add a second one.
+Creating, updating, or deleting a treatment rebuilds that user's forecast cache. `velocity_modifier` is the user's multiplier. Active modifiers for the finger (or `ALL`) are multiplied, then clamped to 0.05–5, and that product is `alpha_tx` in the growth formula.
 
 ## Thresholds and the Gabor score
 
@@ -185,9 +187,29 @@ White balance, before CIELAB, is Von Kries in linear sRGB from the stored refere
 - ID-1 card white (or another white reference) maps onto D65 `(1, 1, 1)`
 - A gray card is neutralized (channels equalized) without being pushed to white, because gray is not D65
 
+## Calibration card
+
+`POST /api/v1/calibrate` with `reference_type=ID1_CARD` looks for ArUco `DICT_4X4_50` markers 0, 1, 2, 3 (clockwise from the top-left of the printed card) before the generic rectangle detector. Marker positions, the white patch, and the 18% gray patch are the printed geometry: white is the Von Kries reference, gray is stored beside it. A card with no markers still uses the quadrilateral fallback.
+
+## Forecasts and wellness notes
+
+`GET /api/v1/fingers/{code}/timeline` uses the latest capture as `t=0`. Older aligned frames are negative days. Forecast frames are `+7, +14, +30, +60, +90` and include control-mesh vertices (`dx`, `dy`, `pinned`) so a client can interpolate. Length change is
+
+```text
+delta_mm(t) = (0.7 * v_observed + 0.3 * v_population) * alpha_tx * t
+```
+
+Background, lunula, and the proximal 85% of the nail bed stay pinned. The free margin moves along the finger by that many pixels, with an inward lateral taper of `0.02 * delta`. When the free margin is shorter than 1.5 mm, the grown band is filled from the distal edge plus light longitudinal noise. Spots and cracks move at `v_observed * t` and are marked clipped once they pass the forecast tip. Each insight includes `disclaimer`.
+
+A new capture updates `observed_velocity_mm_day` only when the nail is longer than the previous one and at least a day has passed. A shorter nail is treated as a trim, not negative growth.
+
 ## Azure App Service
 
-Deploy the **`backend/`** directory as the site root so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. Stack: Python 3.11, Linux.
+Deploy the **`backend/`** directory as the site root so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. Stack: Python 3.11, Linux. `startup.txt` runs `bash startup.sh`, which:
+
+1. Installs `libegl1`, `libgl1`, `libglib2.0-0`, and `libgomp1` when `apt-get` is available (MediaPipe's native library needs EGL).
+2. Reinstalls `opencv-python-headless==5.0.0.93` with `--no-deps` so MediaPipe's `opencv-contrib-python` dependency does not leave a GUI build on the import path.
+3. Starts gunicorn with a uvicorn worker on `${PORT:-8000}`.
 
 `startup.txt` is:
 
@@ -215,7 +237,16 @@ Set `AUTO_CREATE_TABLES=false` in production (that is already the default when t
 
 Other useful settings: `CORS_ORIGINS` (comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`), `SAS_URL_TTL_SECONDS`, `LOG_LEVEL`.
 
-`opencv-python-headless` 5.0.0 is the build the pipeline was checked against (`GUI: NONE`). MediaPipe depends on `opencv-contrib-python`, so the install above forces the headless package back into place. The hand landmarker also needs `libegl1` on the host. The model file is `backend/models/hand_landmarker.task`.
+`opencv-python-headless` 5.0.0 is the build the pipeline was checked against (`GUI: NONE`). The hand model is `backend/models/hand_landmarker.task`.
+
+GitHub Actions workflow `.github/workflows/azure-deploy.yml` runs the tests on pull requests and, on `main`, deploys `backend/` with `azure/webapps-deploy`. Set these repository secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `AZURE_WEBAPP_NAME` | App Service name |
+| `AZURE_WEBAPP_PUBLISH_PROFILE` | Deployment Center → Download publish profile |
+
+An OIDC deploy is the alternative if you would rather not store a publish profile. Create a federated credential for `repo:arubman/nailtrack-ai:ref:refs/heads/main`, then replace the deploy step with `azure/login` using `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`. The workflow comments point at that swap. The frontend Static Web App job belongs in Phase 4.
 
 Tune thresholds on a folder of real photos without changing the defaults:
 
@@ -238,11 +269,10 @@ python scripts/tune_thresholds.py ./sample_nails --csv metrics.csv
 - a blank frame returns no MediaPipe hand, and analyze then responds 422 `RETAKE_NO_HAND` even with `force_save`
 - headless OpenCV still exposes GrabCut, ECC, Gabor, and SIFT
 
-## What Phase 3 still owns
+## What Phase 4 still owns
 
-- `GET /api/v1/fingers/{code}/timeline` with horizons `{+7,+14,+30,+60,+90}` and the thin-plate forecast. `POST /api/v1/treatments` should refresh that user's forecasts.
-- Wellness insights from the stored scores (matrix-cycle copy, bed-length change, ridge score above the threshold), each carrying `disclaimer`.
-- Spot and crack tracking (`tracked_features_json` is still empty).
-- Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) with `scripts/tune_thresholds.py` once 10–20 real nail photos are available.
+- The React/TypeScript PWA: camera HUD, the −90..+90 scrubber that interpolates `mesh` vertices, and the treatment logger wired to this API.
+- Add the Static Web Apps job to `.github/workflows/azure-deploy.yml`.
+- Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) with `scripts/tune_thresholds.py` once 10–20 real nail photos exist. The classical segmenter and spot detector will need that set; corrected masks are already stored beside the automatic ones.
 - Account-key SAS can later move to user-delegation SAS and a managed identity.
-- App Service needs `libegl1` for MediaPipe. The stock Python image may need a custom container for that library.
+- If the App Service image cannot run `apt-get` during startup, use a custom container that already has `libegl1`. `startup.sh` continues when apt fails and still forces the headless OpenCV reinstall.

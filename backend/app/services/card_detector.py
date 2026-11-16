@@ -25,6 +25,7 @@ class DetectedCard:
     long_edge_px: float
     mm_per_px: float
     reference_white: ReferenceWhite
+    method: str = "quad"
 
 
 def detect_card(
@@ -54,7 +55,8 @@ def detect_card(
         corners=quad,
         long_edge_px=long_edge_px,
         mm_per_px=float(long_edge_mm) / long_edge_px,
-        reference_white=reference,
+        reference_white=reference.model_copy(update={"calibration_method": "quad"}),
+        method="quad",
     )
 
 

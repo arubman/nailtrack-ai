@@ -149,6 +149,9 @@ class ReferenceWhite(BaseModel):
     target: Literal["D65", "neutral_gray"]
     source: ReferenceWhiteSource
     patch_norm_bbox: tuple[float, float, float, float] | None = None
+    gray_mean_rgb: tuple[float, float, float] | None = None
+    gray_von_kries_gains: tuple[float, float, float] | None = None
+    calibration_method: Literal["aruco", "quad"] | None = None
 
     @model_validator(mode="after")
     def _ranges(self) -> ReferenceWhite:
@@ -158,6 +161,14 @@ class ReferenceWhite(BaseModel):
         for gain in self.von_kries_gains:
             if gain <= 0:
                 raise ValueError("von_kries_gains must be positive")
+        if self.gray_mean_rgb is not None:
+            for channel in self.gray_mean_rgb:
+                if channel <= 0 or channel > 1:
+                    raise ValueError("gray_mean_rgb channels must be in (0, 1]")
+        if self.gray_von_kries_gains is not None:
+            for gain in self.gray_von_kries_gains:
+                if gain <= 0:
+                    raise ValueError("gray_von_kries_gains must be positive")
         if self.patch_norm_bbox is not None:
             x, y, width, height = self.patch_norm_bbox
             if min(x, y, width, height) < 0 or max(x + width, y + height) > 1:
@@ -428,6 +439,53 @@ class CaptureMeasurementRead(BaseModel):
     aligned_image: ImageLink | None
     segmentation_mask: ImageLink | None
     corrected_mask: ImageLink | None
+
+
+class MeshVertex(BaseModel):
+    """One control point on the latest aligned frame.
+
+    (x, y) is the Day-0 / today pixel. (dx, dy) is the forecast displacement.
+    Pinned vertices stay put so the client can interpolate between horizons.
+    """
+
+    x: float
+    y: float
+    dx: float
+    dy: float
+    pinned: bool
+
+
+class TimelineFeature(BaseModel):
+    id: str
+    type: Literal["crack", "leukonychia"]
+    rel_x: float
+    dist_from_cuticle_mm: float
+    clipped: bool
+    days_until_clear: float | None = None
+
+
+class TimelineFrame(BaseModel):
+    t_days: float
+    kind: Literal["history", "today", "forecast"]
+    capture_id: uuid.UUID | None = None
+    image: ImageLink | None = None
+    delta_length_mm: float = 0.0
+    nail_bed_length_mm: float | None = None
+    free_margin_length_mm: float | None = None
+    total_length_mm: float | None = None
+    mesh: list[MeshVertex] | None = None
+    features: list[TimelineFeature] = Field(default_factory=list)
+    synthesized_free_margin: bool = False
+
+
+class TimelineRead(BaseModel):
+    finger_code: FingerCode
+    disclaimer: str
+    insights: list[WellnessInsight]
+    v_observed_mm_day: float
+    v_effective_mm_day: float
+    alpha_tx: float
+    frames: list[TimelineFrame]
 
 
 class CaptureMaskState(BaseModel):

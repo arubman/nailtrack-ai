@@ -26,7 +26,10 @@ from app.schemas import (
     ReferenceWhite,
 )
 from app.services.biometric_metrics import measure_nail
+from app.services.aruco_card import detect_aruco_card
 from app.services.card_detector import detect_card
+from app.services.feature_detector import detect_tracked_features
+from app.services.forecaster import update_observed_velocity, write_forecast_cache
 from app.services.geometry import (
     FingerPose,
     MeasurementError,
@@ -93,11 +96,15 @@ def calibrate_finger(
         raise PipelineRejection(
             _failure(quality.metrics, ["RETAKE_NO_CARD"], ["A manual reference needs its long-edge width in millimetres."]),
         )
-    card = detect_card(
-        image_bgr,
-        reference_type=reference_type.value,
-        long_edge_mm=float(long_edge_mm),
-    )
+    card = None
+    if reference_type is ScaleReferenceType.ID1_CARD:
+        card = detect_aruco_card(image_bgr)
+    if card is None:
+        card = detect_card(
+            image_bgr,
+            reference_type=reference_type.value,
+            long_edge_mm=float(long_edge_mm),
+        )
     extra: list[str] = []
     if card is None:
         extra.append("RETAKE_NO_CARD")
@@ -240,6 +247,9 @@ def analyze_capture(
     capture.ridge_gabor_score = measurement.ridge_gabor_score
     capture.transverse_gabor_score = measurement.transverse_gabor_score
     capture.cielab_color_json = cielab.model_dump(mode="json")
+    capture.tracked_features_json = detect_tracked_features(aligned_bgr, aligned_mask, mm_per_px)
+    _update_velocity_from_previous(db, baseline, capture, measurement.total_length_mm)
+    write_forecast_cache(db, user, settings, commit=False)
     db.commit()
     db.refresh(capture)
     return StoredCapture(capture=capture, quality=quality.metrics, homography=homography, cielab=cielab)
@@ -303,6 +313,12 @@ def apply_corrected_mask(
     capture.transverse_gabor_score = measurement.transverse_gabor_score
     cielab = CielabColor(L=measurement.cielab[0], a=measurement.cielab[1], b=measurement.cielab[2])
     capture.cielab_color_json = cielab.model_dump(mode="json")
+    capture.tracked_features_json = detect_tracked_features(
+        reference_image,
+        corrected,
+        _mm_per_px(baseline.calibrated_width_mm, anchors),
+    )
+    write_forecast_cache(db, user, settings, commit=False)
     db.commit()
     db.refresh(capture)
     quality = QualityMetrics.model_validate(capture.quality_metrics_json) if capture.quality_metrics_json else QualityMetrics(
@@ -314,6 +330,29 @@ def apply_corrected_mask(
         else None
     )
     return StoredCapture(capture=capture, quality=quality, homography=homography, cielab=cielab)
+
+
+def _update_velocity_from_previous(db: Session, baseline: FingerBaseline, capture: NailCapture, new_total_mm: float) -> None:
+    previous = db.scalar(
+        select(NailCapture)
+        .where(
+            NailCapture.baseline_id == baseline.id,
+            NailCapture.id != capture.id,
+            NailCapture.total_length_mm.is_not(None),
+        )
+        .order_by(NailCapture.captured_at.desc())
+    )
+    if previous is None or previous.captured_at is None:
+        return
+    days = (capture.captured_at - previous.captured_at).total_seconds() / 86400.0
+    updated = update_observed_velocity(
+        previous.total_length_mm,
+        new_total_mm,
+        days,
+        float(baseline.observed_velocity_mm_day),
+    )
+    if updated is not None:
+        baseline.observed_velocity_mm_day = updated
 
 
 def _anchors_from_mask(mask: np.ndarray) -> tuple[float, tuple[float, float], tuple[float, float], AnchorKeypoints]:

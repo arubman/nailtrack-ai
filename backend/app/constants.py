@@ -69,7 +69,8 @@ QUALITY_REASON_MESSAGES: dict[str, str] = {
     ),
     "RETAKE_TILT": "Flatten your finger parallel to the camera lens.",
     "RETAKE_NO_HAND": (
-        "No hand was detected. Place the finger fully in frame with the nail facing the camera."
+        "No hand was detected. Keep the whole finger and the first knuckle in frame. "
+        "You can save this photo anyway; the tilt check will be skipped."
     ),
     "RETAKE_NO_NAIL": (
         "The nail plate could not be separated from the surrounding skin. "
@@ -85,10 +86,12 @@ QUALITY_REASON_MESSAGES: dict[str, str] = {
     ),
 }
 
-# Blur, glare, and tilt can be stored anyway when the client passes force_save.
-# Missing a hand, a nail, or the calibration card cannot.
+# Blur, glare, tilt, and a missing hand can be stored anyway when the client
+# passes force_save. A close-up of one nail often hides the palm, so a missing
+# hand is the same kind of retake as tilt. A missing nail or calibration card
+# still cannot be saved, because there is nothing to measure.
 QUALITY_REASONS_FORCE_SAVE_CAN_OVERRIDE = frozenset(
-    {"RETAKE_BLURRY", "RETAKE_GLARE", "RETAKE_TILT"}
+    {"RETAKE_BLURRY", "RETAKE_GLARE", "RETAKE_TILT", "RETAKE_NO_HAND"}
 )
 
 # Wellness copy for the Phase 3 observation rules. Triggers stay in that phase:

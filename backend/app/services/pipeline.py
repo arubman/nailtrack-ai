@@ -2,7 +2,8 @@
 
 Routes stay thin: they decode the upload, ask MediaPipe for the hand, and
 call these functions. Quality failures return a 422 body. force_save overrides
-only blur, glare, and tilt.
+blur, glare, tilt, and a missing hand. A missing nail or calibration card
+still blocks the save.
 """
 
 from __future__ import annotations
@@ -89,8 +90,9 @@ def calibrate_finger(
     settings: Settings,
 ) -> StoredCalibration:
     pose = observation.pose
-    mask = segment_nail(image_bgr, pose) if pose is not None else np.zeros(image_bgr.shape[:2], np.uint8)
-    quality = evaluate_quality(image_bgr, mask if pose is not None else None, pose, settings)
+    segment_pose = pose if pose is not None else _frame_axis_pose(image_bgr)
+    mask = segment_nail(image_bgr, segment_pose)
+    quality = evaluate_quality(image_bgr, mask, pose, settings)
     long_edge_mm = ID1_CARD_WIDTH_MM if reference_type is ScaleReferenceType.ID1_CARD else reference_width_mm
     if long_edge_mm is None or long_edge_mm <= 0:
         raise PipelineRejection(
@@ -182,8 +184,11 @@ def analyze_capture(
             status_code=409,
         )
     pose = observation.pose
-    mask = segment_nail(image_bgr, pose) if pose is not None else np.zeros(image_bgr.shape[:2], np.uint8)
-    quality = evaluate_quality(image_bgr, mask if int(np.isin(mask, (1, 2, 3)).sum()) else None, pose, settings)
+    # A nail close-up often has no detectable palm. Segment from a vertical
+    # axis through the frame so force_save can still measure the plate.
+    segment_pose = pose if pose is not None else _frame_axis_pose(image_bgr)
+    mask = segment_nail(image_bgr, segment_pose)
+    quality = evaluate_quality(image_bgr, mask, pose, settings)
     if blocks_save(list(quality.metrics.reasons), force_save=force_save):
         raise PipelineRejection(_failure(quality.metrics, list(quality.metrics.reasons)))
     baseline_bgr, baseline_mask = _load_baseline_rasters(storage, baseline, settings)
@@ -353,6 +358,18 @@ def _update_velocity_from_previous(db: Session, baseline: FingerBaseline, captur
     )
     if updated is not None:
         baseline.observed_velocity_mm_day = updated
+
+
+def _frame_axis_pose(image_bgr: np.ndarray) -> FingerPose:
+    """A stand-in axis when MediaPipe cannot see a palm in a close-up."""
+    height, width = image_bgr.shape[:2]
+    x = width / 2.0
+    return FingerPose(
+        dip_xy=(x, height * 0.28),
+        tip_xy=(x, height * 0.82),
+        dip_xyz=(0.0, 0.0, 0.0),
+        tip_xyz=(0.0, 1.0, 0.0),
+    )
 
 
 def _anchors_from_mask(mask: np.ndarray) -> tuple[float, tuple[float, float], tuple[float, float], AnchorKeypoints]:

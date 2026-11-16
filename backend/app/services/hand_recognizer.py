@@ -2,7 +2,9 @@
 
 Image landmarks are converted to pixels. World landmarks (meters) supply the
 3D DIP and tip used by the tilt formula. If the model finds no hand, the
-caller receives RETAKE_NO_HAND instead of a silent pass.
+caller receives RETAKE_NO_HAND instead of a silent pass. A close-up of one
+finger often misses the palm detector, so the confidence thresholds are
+lower than MediaPipe's defaults and large photos are checked at a shorter edge.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from app.services.geometry import FINGER_TIP_AND_DIP, FingerPose, finger_name
 _LOCK = threading.Lock()
 _LANDMARKER = None
 _LOADED_PATH: str | None = None
+_MIN_CONFIDENCE = 0.3
+_MAX_EDGE = 960
 
 
 class HandModelUnavailable(RuntimeError):
@@ -36,7 +40,7 @@ class HandObservation:
 
 def recognize_finger(image_bgr: np.ndarray, finger_code: str, model_path: Path) -> HandObservation:
     landmarker = _landmarker(model_path)
-    rgb = np.ascontiguousarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+    rgb = _rgb_for_detection(image_bgr)
     import mediapipe as mp
 
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -75,6 +79,20 @@ def recognize_finger(image_bgr: np.ndarray, finger_code: str, model_path: Path) 
     return HandObservation(pose=best_pose, hand_count=len(result.hand_landmarks))
 
 
+def _rgb_for_detection(image_bgr: np.ndarray) -> np.ndarray:
+    height, width = image_bgr.shape[:2]
+    long_edge = max(height, width)
+    working = image_bgr
+    if long_edge > _MAX_EDGE:
+        scale = _MAX_EDGE / long_edge
+        working = cv2.resize(
+            image_bgr,
+            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    return np.ascontiguousarray(cv2.cvtColor(working, cv2.COLOR_BGR2RGB))
+
+
 def _xyz(landmark: object) -> tuple[float, float, float]:
     return (float(landmark.x), float(landmark.y), float(landmark.z))
 
@@ -103,7 +121,15 @@ def _landmarker(model_path: Path):
         import mediapipe as mp
 
         try:
-            landmarker = mp.tasks.vision.HandLandmarker.create_from_model_path(path)
+            options = mp.tasks.vision.HandLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=path),
+                running_mode=mp.tasks.vision.RunningMode.IMAGE,
+                num_hands=1,
+                min_hand_detection_confidence=_MIN_CONFIDENCE,
+                min_hand_presence_confidence=_MIN_CONFIDENCE,
+                min_tracking_confidence=_MIN_CONFIDENCE,
+            )
+            landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
         except (OSError, RuntimeError, ValueError) as exc:
             raise HandModelUnavailable("MediaPipe HandLandmarker failed to load") from exc
         _LANDMARKER = landmarker

@@ -9,7 +9,7 @@ not mounted, because that would publish the dev folder.
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -129,18 +129,44 @@ class LocalStorage(Storage):
 
 
 class AzureBlobStorage(Storage):
-    """Private container. read_url signs a read-only SAS with the account key."""
+    """Private container. Read URLs are short-lived SAS tokens.
+
+    When a credential is supplied, SAS tokens are user-delegation signatures
+    from that identity (managed identity on App Service). Otherwise the
+    account key in the connection string signs them. That key path is the
+    local and dev fallback.
+    """
 
     kind = "azure"
 
-    def __init__(self, connection_string: str, container: str, ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        connection_string: str | None = None,
+        container: str = "nailtrack-private",
+        ttl_seconds: int = 300,
+        *,
+        credential: object | None = None,
+        account_name: str | None = None,
+        endpoint_suffix: str = "core.windows.net",
+    ) -> None:
         self.connection_string = connection_string
         self.container_name = container
         self.ttl_seconds = ttl_seconds
-        self._parts = _parse_connection_string(connection_string)
-        if "AccountName" not in self._parts or "AccountKey" not in self._parts:
-            raise ValueError("Azure storage connection string must include AccountName and AccountKey")
+        self._credential = credential
+        self._parts = _parse_connection_string(connection_string or "")
+        self._account_name = account_name or self._parts.get("AccountName")
+        self._endpoint_suffix = self._parts.get("EndpointSuffix", endpoint_suffix)
+        self._account_key = self._parts.get("AccountKey")
+        if credential is None and (not self._account_name or not self._account_key):
+            raise ValueError(
+                "Azure storage needs a connection string with AccountName and AccountKey, "
+                "or a managed-identity credential plus AZURE_STORAGE_ACCOUNT_NAME"
+            )
+        if not self._account_name:
+            raise ValueError("Azure storage account name is missing")
         self._service = None
+        self._delegation_key = None
+        self._delegation_expires: object | None = None
 
     def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
         from azure.storage.blob import ContentSettings
@@ -187,19 +213,36 @@ class AzureBlobStorage(Storage):
         if ttl <= 0 or ttl > 3600:
             raise ValueError("SAS lifetime must be between 1 and 3600 seconds")
         expiry = utcnow() + timedelta(seconds=ttl)
-        sas = generate_blob_sas(
-            account_name=self._parts["AccountName"],
-            container_name=self.container_name,
-            blob_name=safe,
-            account_key=self._parts["AccountKey"],
-            permission=BlobSasPermissions(read=True),
-            expiry=expiry,
-            protocol="https",
-        )
-        suffix = self._parts.get("EndpointSuffix", "core.windows.net")
+        sas_kwargs: dict[str, object] = {
+            "account_name": self._account_name,
+            "container_name": self.container_name,
+            "blob_name": safe,
+            "permission": BlobSasPermissions(read=True),
+            "expiry": expiry,
+            "protocol": "https",
+        }
+        if self._credential is not None:
+            sas_kwargs["user_delegation_key"] = self._user_delegation_key()
+        else:
+            sas_kwargs["account_key"] = self._account_key
+        sas = generate_blob_sas(**sas_kwargs)
         quoted = quote(safe, safe="/")
-        account = self._parts["AccountName"]
-        return f"https://{account}.blob.{suffix}/{self.container_name}/{quoted}?{sas}"
+        return (
+            f"https://{self._account_name}.blob.{self._endpoint_suffix}/"
+            f"{self.container_name}/{quoted}?{sas}"
+        )
+
+    def _user_delegation_key(self):
+        now = utcnow()
+        cached_expiry = self._delegation_expires
+        if self._delegation_key is not None and isinstance(cached_expiry, datetime) and cached_expiry > now + timedelta(minutes=5):
+            return self._delegation_key
+        start = now - timedelta(minutes=1)
+        key_expiry = now + timedelta(hours=1)
+        key = self._service_client().get_user_delegation_key(start, key_expiry)
+        self._delegation_key = key
+        self._delegation_expires = key_expiry
+        return key
 
     def ensure_ready(self) -> None:
         """Create the container if needed and refuse to run against a public one."""
@@ -235,7 +278,11 @@ class AzureBlobStorage(Storage):
         if self._service is None:
             from azure.storage.blob import BlobServiceClient
 
-            self._service = BlobServiceClient.from_connection_string(self.connection_string)
+            if self._credential is not None:
+                account_url = f"https://{self._account_name}.blob.{self._endpoint_suffix}"
+                self._service = BlobServiceClient(account_url=account_url, credential=self._credential)
+            else:
+                self._service = BlobServiceClient.from_connection_string(self.connection_string or "")
         return self._service
 
     def _container(self):
@@ -244,6 +291,21 @@ class AzureBlobStorage(Storage):
 
 def build_storage(settings: Settings) -> Storage:
     if settings.resolved_storage_backend == "azure":
+        if settings.azure_storage_use_managed_identity:
+            from azure.identity import DefaultAzureCredential
+
+            account = settings.azure_storage_account_name
+            if not account and settings.azure_storage_connection_string:
+                account = _parse_connection_string(settings.azure_storage_connection_string).get("AccountName")
+            if not account:
+                raise RuntimeError("Managed identity storage requires AZURE_STORAGE_ACCOUNT_NAME")
+            return AzureBlobStorage(
+                connection_string=settings.azure_storage_connection_string,
+                container=settings.azure_storage_container,
+                ttl_seconds=settings.sas_url_ttl_seconds,
+                credential=DefaultAzureCredential(),
+                account_name=account,
+            )
         if not settings.azure_storage_connection_string:
             raise RuntimeError("Azure storage is not configured")
         return AzureBlobStorage(

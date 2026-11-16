@@ -15,6 +15,8 @@ def _settings(monkeypatch, **env: str) -> Settings:
         "STORAGE_BACKEND",
         "AZURE_STORAGE_CONN_STRING",
         "AZURE_STORAGE_CONNECTION_STRING",
+        "AZURE_STORAGE_USE_MANAGED_IDENTITY",
+        "AZURE_STORAGE_ACCOUNT_NAME",
         "BLUR_LAPLACIAN_MIN",
         "GLARE_RATIO_MAX",
         "TILT_DEG_MAX",
@@ -102,6 +104,22 @@ def test_production_requires_postgres_and_blob(monkeypatch):
     text = str(caught.value)
     assert "PostgreSQL" in text
     assert "AZURE_STORAGE_CONN_STRING" in text
+
+
+def test_production_accepts_managed_identity_blob(monkeypatch):
+    settings = _settings(
+        monkeypatch,
+        ENVIRONMENT="production",
+        AUTH_MODE="entra",
+        ENTRA_TENANT_ID="tenant",
+        ENTRA_TENANT_SUBDOMAIN="nailtrack",
+        ENTRA_CLIENT_ID="client",
+        DATABASE_URL="postgresql://user:pass@db.example:5432/nailtrack",
+        AZURE_STORAGE_USE_MANAGED_IDENTITY="true",
+        AZURE_STORAGE_ACCOUNT_NAME="nailtrackprod",
+    )
+    assert settings.resolved_storage_backend == "azure"
+    assert settings.azure_storage_use_managed_identity is True
 
 
 def test_entra_issuer_defaults_to_external_id_host(monkeypatch):

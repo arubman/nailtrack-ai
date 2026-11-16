@@ -76,6 +76,7 @@ def build_finger_timeline(
                 kind=kind,
                 capture_id=capture.id,
                 image=image_link(storage, capture.aligned_image_key or capture.raw_image_key),
+                mask=image_link(storage, _mask_key(capture)),
                 nail_bed_length_mm=capture.nail_bed_length_mm,
                 free_margin_length_mm=capture.free_margin_length_mm,
                 total_length_mm=capture.total_length_mm,
@@ -117,6 +118,7 @@ def build_finger_timeline(
                     kind="forecast",
                     capture_id=latest.id,
                     image=forecast_image,
+                    mask=image_link(storage, _mask_key(latest)),
                     delta_length_mm=delta_mm,
                     nail_bed_length_mm=latest.nail_bed_length_mm,
                     free_margin_length_mm=(latest.free_margin_length_mm or 0.0) + delta_mm,
@@ -173,6 +175,12 @@ def _features_at(
             )
         )
     return rows
+
+
+def _mask_key(capture: NailCapture) -> str | None:
+    if capture.mask_source and capture.mask_source.value == "user_corrected" and capture.corrected_mask_key:
+        return capture.corrected_mask_key
+    return capture.segmentation_mask_key
 
 
 def _mm_per_px(baseline: FingerBaseline) -> float:

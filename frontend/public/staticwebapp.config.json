@@ -1,0 +1,9 @@
+{
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/assets/*", "/models/*", "/icon-*.png", "/favicon.svg"]
+  },
+  "mimeTypes": {
+    ".task": "application/octet-stream"
+  }
+}

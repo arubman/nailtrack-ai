@@ -1,0 +1,16 @@
+# NailTrack AI backend — Python 3.11 on Azure App Service (Linux).
+# Vision code arrives in later phases; opencv-python-headless is pinned here
+# so the App Service image is ready and headless (no libGL dependency).
+
+fastapi>=0.115.6
+uvicorn[standard]>=0.34.0
+gunicorn>=23.0.0
+sqlalchemy>=2.0.36
+alembic>=1.14.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+PyJWT[crypto]>=2.10.1
+azure-storage-blob>=12.24.0
+psycopg[binary]>=3.2.3
+opencv-python-headless>=4.10.0
+python-multipart>=0.0.20

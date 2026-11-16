@@ -4,7 +4,7 @@ NailTrack keeps a private photo record of fingernail growth, logs regimens you c
 
 NailTrack shares wellness observations only. It is not medical advice and does not diagnose, treat, or predict disease. A treatment's `velocity_modifier` is a number you set for your own forecast. The app does not claim that a supplement, oil, or coating changed your growth rate.
 
-This repository currently contains **Phase 1**: the FastAPI backend, the database, authentication, and private image storage. The OpenCV pipeline, forecasts, and the React PWA come in later phases. There are no placeholder vision endpoints.
+Phases 1 and 2 are in the backend: accounts, private storage, and the classical vision pipeline (quality gate, card calibration, segmentation, homography, measurements). Forecasts and the React PWA come later. Vision results are computed, not stubbed.
 
 ## Layout
 
@@ -20,8 +20,11 @@ backend/
     storage.py          Private Azure Blob SAS URLs, or the local authenticated route
     reference_white.py  Von Kries gains from a card white/gray patch
     constants.py        Horizons, Gabor normalization, wellness copy
-    api/                health, session, fingers, treatments, media
+    services/           Quality, MediaPipe hands, segmentation, alignment, metrics
+    api/                health, session, fingers, calibrate, captures, treatments, media
+  models/hand_landmarker.task
   alembic/              PostgreSQL (and SQLite) migrations
+  scripts/tune_thresholds.py
   requirements.txt
   startup.txt           gunicorn + uvicorn worker command for App Service
   runtime.txt           python-3.11
@@ -36,6 +39,7 @@ cd backend
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
+pip install --force-reinstall --no-deps "opencv-python-headless==5.0.0.93"
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -139,6 +143,9 @@ Capture columns reserved for segmentation and correction (no model is trained ye
 | `POST` | `/api/v1/treatments` | yes | Log a regimen |
 | `GET` | `/api/v1/treatments` | yes | List, filter by category, finger, or `active_only` |
 | `GET/PATCH/DELETE` | `/api/v1/treatments/{id}` | yes | Read, update, delete. Another user's id is a 404 |
+| `POST` | `/api/v1/calibrate` | yes | ID-1 or manual card, white reference, Day-0 baseline |
+| `POST` | `/api/v1/captures/analyze` | yes | Quality gate, align, measure. 422 with reasons unless `force_save` |
+| `POST` | `/api/v1/captures/{id}/mask` | yes | Store a user-corrected 4-class mask and remeasure |
 | `GET` | `/api/v1/media/{key}` | yes | Local private-file read |
 
 `GET /api/v1/me` is the source of truth for the client HUD:
@@ -161,7 +168,7 @@ Treatment `velocity_modifier` must be greater than 0 and at most 5. The default 
 
 Override any threshold with the environment variables in `.env.example` (`BLUR_LAPLACIAN_MIN`, `GLARE_RATIO_MAX`, `TILT_DEG_MAX`, `RIDGE_SCORE_INSIGHT_THRESHOLD`, `GABOR_ENERGY_FLOOR`, `DEFAULT_VELOCITY_MM_DAY`, `POPULATION_VELOCITY_MM_DAY`).
 
-Phase 2 normalizes the longitudinal ridge score to 0..1 as the share of L2-normalized Gabor energy that is longitudinal, gated by `GABOR_ENERGY_FLOOR` so a smooth nail scores 0. The full procedure, kernel constants (`ksize=21`, `sigma=3.0`, `lambda=8`, `gamma=0.5`, `theta=0` and `pi/2`), and the reason a ratio is used instead of a camera-specific gain are in `app/constants.py` (`GABOR_RIDGE_SCORE_NORMALIZATION`). A score above the insight threshold means at least 35% of the oriented energy is longitudinal. That shows a wellness observation, not a diagnosis.
+The longitudinal ridge score is the share of L2-normalized Gabor energy that is longitudinal, gated by `GABOR_ENERGY_FLOOR` so a smooth nail scores 0. The full procedure, kernel constants (`ksize=21`, `sigma=3.0`, `lambda=8`, `gamma=0.5`, `theta=0` and `pi/2`), and the reason a ratio is used instead of a camera-specific gain are in `app/constants.py` (`GABOR_RIDGE_SCORE_NORMALIZATION`). A score above the insight threshold means at least 35% of the oriented energy is longitudinal. That shows a wellness observation, not a diagnosis.
 
 Glare pixels are those with HSV `V > 245` and `S < 25` (`GLARE_VALUE_MIN`, `GLARE_SATURATION_MAX`). The pass/fail cutoff is the configurable ratio.
 
@@ -208,7 +215,13 @@ Set `AUTO_CREATE_TABLES=false` in production (that is already the default when t
 
 Other useful settings: `CORS_ORIGINS` (comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`), `SAS_URL_TTL_SECONDS`, `LOG_LEVEL`.
 
-`opencv-python-headless` is installed for later phases so the App Service image does not need `libGL`. This phase does not import it. MediaPipe is not a backend dependency: the live HUD runs in the browser.
+`opencv-python-headless` 5.0.0 is the build the pipeline was checked against (`GUI: NONE`). MediaPipe depends on `opencv-contrib-python`, so the install above forces the headless package back into place. The hand landmarker also needs `libegl1` on the host. The model file is `backend/models/hand_landmarker.task`.
+
+Tune thresholds on a folder of real photos without changing the defaults:
+
+```bash
+python scripts/tune_thresholds.py ./sample_nails --csv metrics.csv
+```
 
 ## Tests
 
@@ -221,12 +234,15 @@ Other useful settings: `CORS_ORIGINS` (comma-separated; default `http://localhos
 - Entra JWT checks (audience, issuer, tenant, scope, authorized party, expiry, `alg=none`) with a locally signed key, and the 401 path when auth mode is `entra`
 - finger listing scoped to the caller, the authenticated media route, and a read-only SAS URL
 - production settings refusing dev auth, SQLite, and local disk
+- synthetic nails and cards: class order, ray-cast lengths, ID-1 scale, Von Kries Lab, Gabor orientation, homography recovery, ECC affine fallback
+- a blank frame returns no MediaPipe hand, and analyze then responds 422 `RETAKE_NO_HAND` even with `force_save`
+- headless OpenCV still exposes GrabCut, ECC, Gabor, and SIFT
 
-## What Phase 2 and Phase 3 still own
+## What Phase 3 still owns
 
-- `POST /api/v1/calibrate` and `POST /api/v1/captures/analyze` (quality gate, classical segmentation, homography, ray-cast lengths). Not stubbed here.
-- Server-side re-check of a submitted photo. Blur and glare are OpenCV on the upload. Tilt in the live HUD is MediaPipe Tasks for Web; the server still needs a landmark source for its own tilt check (client-submitted landmarks, or a server-side hand model). That choice is open.
-- User correction of a mask, writing `corrected_mask_key` and `mask_source=user_corrected` while keeping the automatic mask.
-- Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) on real nails after the kernels are L2-normalized.
-- `GET /api/v1/fingers/{code}/timeline` with horizons `{+7,+14,+30,+60,+90}` and the Phase 3 thin-plate forecast. Treatment create should then refresh forecasts for that user.
-- Replacing account-key SAS with user-delegation SAS and a managed identity, if the App Service should not hold `AccountKey`.
+- `GET /api/v1/fingers/{code}/timeline` with horizons `{+7,+14,+30,+60,+90}` and the thin-plate forecast. `POST /api/v1/treatments` should refresh that user's forecasts.
+- Wellness insights from the stored scores (matrix-cycle copy, bed-length change, ridge score above the threshold), each carrying `disclaimer`.
+- Spot and crack tracking (`tracked_features_json` is still empty).
+- Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) with `scripts/tune_thresholds.py` once 10–20 real nail photos are available.
+- Account-key SAS can later move to user-delegation SAS and a managed identity.
+- App Service needs `libegl1` for MediaPipe. The stock Python image may need a custom container for that library.

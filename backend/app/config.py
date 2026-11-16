@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -63,6 +64,9 @@ class Settings(BaseSettings):
     sas_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     local_storage_path: str = "data/uploads"
     media_url_prefix: str = "/api/v1/media"
+    max_image_edge_px: int = Field(default=1600, ge=256, le=4096)
+    # Resolved relative to the backend directory when the path is not already a file.
+    hand_model_path: str = "models/hand_landmarker.task"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
@@ -173,6 +177,16 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}")
         return normalized
+
+    @property
+    def resolved_hand_model_path(self) -> Path:
+        configured = Path(self.hand_model_path)
+        if configured.is_file():
+            return configured
+        packaged = Path(__file__).resolve().parents[1] / "models" / "hand_landmarker.task"
+        if packaged.is_file():
+            return packaged
+        return configured
 
     @property
     def cors_origin_list(self) -> list[str]:

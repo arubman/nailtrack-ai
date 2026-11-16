@@ -146,6 +146,8 @@ class FingerBaseline(Base):
     # Physical width of the scale object itself (85.60 for an ID-1 card), not the nail.
     scale_reference_width_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
     baseline_image_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Indexed PNG of the Day-0 4-class mask, same pixel grid as baseline_image_key.
+    baseline_mask_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     anchor_keypoints_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # {"space", "mean_rgb", "von_kries_gains", "target", "source", "patch_norm_bbox"}
     reference_white_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -235,6 +237,8 @@ class NailCapture(Base):
     total_length_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
     lunula_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     ridge_gabor_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Share of oriented Gabor energy that is transverse (Beau's lines). Same 0..1 normalization.
+    transverse_gabor_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     cielab_color_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tracked_features_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utcnow)
@@ -289,6 +293,10 @@ class NailCapture(Base):
         CheckConstraint(
             "ridge_gabor_score IS NULL OR (ridge_gabor_score >= 0 AND ridge_gabor_score <= 1)",
             name="ck_nail_captures_ridge_unit_interval",
+        ),
+        CheckConstraint(
+            "transverse_gabor_score IS NULL OR (transverse_gabor_score >= 0 AND transverse_gabor_score <= 1)",
+            name="ck_nail_captures_transverse_unit_interval",
         ),
         CheckConstraint(
             "("

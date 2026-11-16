@@ -1,8 +1,7 @@
 """FastAPI entrypoint.
 
-Vision routes (calibrate, capture analysis, timeline, forecast) are not
-mounted. They need the OpenCV pipeline from later phases; this process will
-not answer them with placeholder numbers.
+Calibration and capture analysis run the classical vision pipeline.
+Forecasts and the timeline are still later phases.
 """
 
 from __future__ import annotations
@@ -14,6 +13,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
+from app.api.routes_calibrate import router as calibrate_router
+from app.api.routes_captures import router as captures_router
 from app.api.routes_fingers import router as fingers_router
 from app.api.routes_health import router as health_router
 from app.api.routes_me import router as me_router
@@ -32,8 +33,8 @@ to log, then shows how a nail has changed and how it may grow.
 
 {NOT_MEDICAL_ADVICE}
 
-Phase 1 serves accounts, finger baselines, the treatment log, and private image
-reads. Calibration, measurement, and forecasts are later phases.
+Accounts, calibration, capture measurement, the treatment log, and private
+image reads are served here. Forecasts are a later phase.
 """.strip()
 
 
@@ -92,6 +93,8 @@ def create_app() -> FastAPI:
     application.include_router(health_router)
     application.include_router(me_router, prefix="/api/v1")
     application.include_router(fingers_router, prefix="/api/v1")
+    application.include_router(calibrate_router, prefix="/api/v1")
+    application.include_router(captures_router, prefix="/api/v1")
     application.include_router(treatments_router, prefix="/api/v1")
     application.include_router(media_router, prefix="/api/v1")
 

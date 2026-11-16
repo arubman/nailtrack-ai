@@ -58,7 +58,28 @@ QUALITY_REASON_MESSAGES: dict[str, str] = {
         "Tilt your finger slightly to eliminate overhead light reflection on the nail plate."
     ),
     "RETAKE_TILT": "Flatten your finger parallel to the camera lens.",
+    "RETAKE_NO_HAND": (
+        "No hand was detected. Place the finger fully in frame with the nail facing the camera."
+    ),
+    "RETAKE_NO_NAIL": (
+        "The nail plate could not be separated from the surrounding skin. "
+        "Use a plain background and fill the frame with the fingertip."
+    ),
+    "RETAKE_NO_CARD": (
+        "The calibration card was not found. Place the full card flat beside the finger, "
+        "with its border visible."
+    ),
+    "ALIGNMENT_FAILED": (
+        "The photo could not be registered to the Day-0 baseline. "
+        "Retake with the finger in a similar position and lighting."
+    ),
 }
+
+# Blur, glare, and tilt can be stored anyway when the client passes force_save.
+# Missing a hand, a nail, or the calibration card cannot.
+QUALITY_REASONS_FORCE_SAVE_CAN_OVERRIDE = frozenset(
+    {"RETAKE_BLURRY", "RETAKE_GLARE", "RETAKE_TILT"}
+)
 
 # Wellness copy for the Phase 3 observation rules. Triggers stay in that phase:
 # matrix cycle as general context, bed-length increase across aligned captures,

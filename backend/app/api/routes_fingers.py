@@ -1,15 +1,15 @@
 """List the ten fingers and any Day-0 baseline that belongs to the caller.
 
-Creating a baseline is the calibrate flow, which needs the vision pipeline and
-lands in Phase 2. This router only reads.
+Baselines are created by POST /api/v1/calibrate. This router only reads them.
 """
 
 from fastapi import APIRouter
 from sqlalchemy import select
 
 from app.deps import CurrentStorage, CurrentUser, DbSession
+from app.images import image_link
 from app.models import FingerBaseline, FingerCode
-from app.schemas import FingerSummary, ImageLink
+from app.schemas import FingerSummary
 from app.storage import Storage
 
 router = APIRouter(prefix="/fingers", tags=["fingers"])
@@ -51,18 +51,5 @@ def _summary(
         has_reference_white=bool(baseline and baseline.reference_white_json),
         scale_reference_type=baseline.scale_reference_type if baseline else None,
         scale_reference_width_mm=baseline.scale_reference_width_mm if baseline else None,
-        baseline_image=_image_link(storage, baseline.baseline_image_key if baseline else None),
-    )
-
-
-def _image_link(storage: Storage, key: str | None) -> ImageLink | None:
-    if not key:
-        return None
-    if storage.kind == "azure":
-        ttl = getattr(storage, "ttl_seconds", None)
-        return ImageLink(url=storage.read_url(key), access="sas", expires_in_seconds=ttl)
-    return ImageLink(
-        url=storage.read_url(key),
-        access="authenticated_route",
-        expires_in_seconds=None,
+        baseline_image=image_link(storage, baseline.baseline_image_key if baseline else None),
     )

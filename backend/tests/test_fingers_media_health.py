@@ -19,8 +19,8 @@ def test_health_docs_and_session_contract(client: TestClient):
     assert spec.status_code == 200
     paths = spec.json()["paths"]
     assert "/api/v1/treatments" in paths
-    assert "/api/v1/captures/analyze" not in paths
-    assert "/api/v1/calibrate" not in paths
+    assert "/api/v1/captures/analyze" in paths
+    assert "/api/v1/calibrate" in paths
 
     session = client.get("/api/v1/me")
     assert session.status_code == 200

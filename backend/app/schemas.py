@@ -22,7 +22,14 @@ from app.reference_white import (
 )
 
 ReferenceWhiteSource = Literal["id1_card_white", "gray_card", "manual_white"]
-QualityReasonCode = Literal["RETAKE_BLURRY", "RETAKE_GLARE", "RETAKE_TILT"]
+QualityReasonCode = Literal[
+    "RETAKE_BLURRY",
+    "RETAKE_GLARE",
+    "RETAKE_TILT",
+    "RETAKE_NO_HAND",
+    "RETAKE_NO_NAIL",
+    "RETAKE_NO_CARD",
+]
 
 
 def ensure_utc(value: datetime | None) -> datetime | None:
@@ -195,10 +202,23 @@ class AnchorKeypoints(BaseModel):
 
 
 class HomographyRecord(BaseModel):
+    """3x3 map from the capture pixel grid onto the Day-0 baseline.
+
+    `warpPerspective(capture, matrix)` lands on the baseline. `method` is
+    `homography_ecc` when ECC refines the RANSAC homography, `affine_fallback`
+    when ECC does not converge (typical on low-texture skin), or
+    `homography_ransac` when the affine fit also fails and the RANSAC
+    homography is kept. `alignment_quality` is in 0..1.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     matrix: list[list[float]]
     ransac_inlier_rms: float | None = Field(default=None, ge=0)
+    method: Literal["homography_ecc", "affine_fallback", "homography_ransac"] | None = None
+    alignment_quality: float | None = Field(default=None, ge=0, le=1)
+    inlier_ratio: float | None = Field(default=None, ge=0, le=1)
+    ecc_correlation: float | None = None
 
     @model_validator(mode="after")
     def _matrix_shape(self) -> HomographyRecord:
@@ -214,9 +234,11 @@ class QualityMetrics(BaseModel):
 
     laplacian_var: float = Field(ge=0)
     glare_ratio: float = Field(ge=0, le=1)
-    tilt_deg: float = Field(ge=0)
+    tilt_deg: float | None = Field(default=None, ge=0)
     passed: bool
     reasons: list[QualityReasonCode] = Field(default_factory=list)
+    hand_detected: bool = False
+    handedness: str | None = None
 
 
 class CielabColor(BaseModel):
@@ -363,6 +385,49 @@ class TreatmentListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class QualityRejection(BaseModel):
+    """Body of HTTP 422 when a photo is refused or cannot be measured."""
+
+    passed: bool = False
+    reasons: list[str]
+    messages: list[str]
+    metrics: QualityMetrics
+
+
+class CalibrationRead(BaseModel):
+    finger_code: FingerCode
+    baseline_id: uuid.UUID
+    calibrated_width_mm: float
+    scale_reference_type: ScaleReferenceType
+    scale_reference_width_mm: float
+    mm_per_px: float
+    reference_white: ReferenceWhite
+    anchor_keypoints: AnchorKeypoints
+    quality: QualityMetrics
+    baseline_image: ImageLink
+
+
+class CaptureMeasurementRead(BaseModel):
+    id: uuid.UUID
+    finger_code: FingerCode
+    baseline_id: uuid.UUID
+    captured_at: datetime
+    quality: QualityMetrics
+    nail_bed_length_mm: float | None
+    free_margin_length_mm: float | None
+    total_length_mm: float | None
+    lunula_ratio: float | None
+    ridge_gabor_score: float | None
+    transverse_gabor_score: float | None
+    cielab: CielabColor | None
+    homography: HomographyRecord | None
+    mask_source: MaskSource | None
+    raw_image: ImageLink | None
+    aligned_image: ImageLink | None
+    segmentation_mask: ImageLink | None
+    corrected_mask: ImageLink | None
 
 
 class CaptureMaskState(BaseModel):

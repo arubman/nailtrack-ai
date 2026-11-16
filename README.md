@@ -28,14 +28,15 @@ backend/
   requirements.txt
   startup.sh            Zip-deploy fallback: apt libraries, headless OpenCV, gunicorn
   startup.txt           `bash startup.sh` so Oryx picks the script up
-  Dockerfile            Recommended App Service image (libraries already installed)
+  Dockerfile            Container Apps image (also usable on App Service)
   runtime.txt           python-3.11
 frontend/               Vite + React + TypeScript PWA
+infra/containerapps-setup.ps1
 ```
 
 ## Local development
 
-Python 3.11 is the App Service runtime. The code also runs on 3.12.
+Python 3.11 is the container runtime. The code also runs on 3.12.
 
 ```bash
 cd backend
@@ -216,70 +217,71 @@ Background, lunula, and the proximal 85% of the nail bed stay pinned. The free m
 
 A new capture updates `observed_velocity_mm_day` only when the nail is longer than the previous one and at least a day has passed. A shorter nail is treated as a trim, not negative growth.
 
-## Azure App Service
+## Azure Container Apps
 
-**Recommended:** build `backend/Dockerfile` and run that image. It is Python 3.11 slim with `libegl1`, `libgl1`, `libgles2`, `libglib2.0-0`, and `libgomp1` already installed, then `opencv-python-headless==5.0.0.93` force-reinstalled after MediaPipe so the GUI OpenCV build is not what `import cv2` loads. The container starts gunicorn directly. Nothing is apt-installed at boot.
+The API runs on Container Apps. This subscription has no App Service quota. The current deployment is single-user: `ENVIRONMENT=development`, `AUTH_MODE=dev`, and SQLite on an Azure Files share. `ENVIRONMENT=production` still refuses dev auth and SQLite; that gate stays in place for a later Postgres deployment.
+
+`backend/Dockerfile` is Python 3.11 slim with `libegl1`, `libgl1`, `libgles2`, `libglib2.0-0`, and `libgomp1` installed, then `opencv-python-headless==5.0.0.93` force-reinstalled after MediaPipe. The hand landmarker model is copied into the image. The process listens on `$PORT` (default 8000). `WEB_CONCURRENCY` defaults to 1. SQLite on a network share must stay at one worker.
 
 ```bash
 docker build -t nailtrack-api backend
-docker run --rm -p 8000:8000 --env-file backend/.env nailtrack-api
+docker run --rm -p 8000:8000 -e DATABASE_URL=sqlite:////data/nailtrack.db --env-file backend/.env nailtrack-api
 ```
 
-On App Service, publish the image to a registry the app can pull, set `WEBSITES_PORT=8000`, and do not set a startup command that calls `startup.sh`.
+The app creates the SQLite file's parent directory when it is missing. Container Apps probes `GET /health`, which stays anonymous.
 
-**Zip-deploy fallback:** deploy the `backend/` directory so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. `startup.txt` is `bash startup.sh`. That script apt-installs the same libraries when the sandbox allows it, force-reinstalls headless OpenCV, then execs gunicorn on `${PORT:-8000}`. If apt is not permitted, the script continues and the process will fail until you switch to the container image. The GitHub Action `azure/webapps-deploy` publishes this zip. Two workers are for PostgreSQL. Do not point this command at a SQLite file.
+The Azure Files mount for `/data` must include the **`nobrl`** option. SQLite uses byte-range locks, and SMB rejects those unless `nobrl` is set. The setup script also sets `dir_mode=0777,file_mode=0666` so the container can create `nailtrack.db` on the share. `DATABASE_URL` is `sqlite:////data/nailtrack.db`.
 
-Production startup fails unless all of the following are true:
+Blob reads are short-lived user-delegation SAS URLs when `AZURE_STORAGE_USE_MANAGED_IDENTITY=true`. The container app's system identity needs **Storage Blob Data Contributor** and **Storage Blob Delegator** on the storage account, plus **AcrPull** on the registry. The browser fetches those SAS URLs, so the storage account CORS list must allow the Static Web Apps origin for `GET` and `HEAD`.
 
-- `ENVIRONMENT=production`
-- `AUTH_MODE=entra` and the Entra settings above
-- `DATABASE_URL` is PostgreSQL (`postgresql://` is rewritten to `postgresql+psycopg://`)
-- Blob storage is configured (see below)
-- `AZURE_STORAGE_CONTAINER` (default `nailtrack-private`) is a private container
+One-time setup, from a machine that is already `az login` and can create role assignments and app registrations:
 
-Blob reads are short-lived read-only SAS URLs. Set `AZURE_STORAGE_USE_MANAGED_IDENTITY=true` and `AZURE_STORAGE_ACCOUNT_NAME` so the API signs **user-delegation SAS** with `DefaultAzureCredential` (the App Service managed identity). Grant that identity **Storage Blob Data Reader** and **Storage Blob Delegator** on the account. The browser fetches those SAS URLs, so the storage account CORS list must allow the Static Web Apps origin for `GET` and `HEAD`. A connection string with `AccountName` and `AccountKey` remains the local and dev fallback, used only when the managed-identity flag is off. If both are set, user delegation wins.
-
-Run migrations as a deploy step, not via `create_all`:
-
-```bash
-alembic upgrade head
+```powershell
+.\infra\containerapps-setup.ps1
 ```
 
-Set `AUTO_CREATE_TABLES=false` in production (that is already the default when the URL is Postgres).
+The defaults are resource group `rg-nailtrack`, ACR `nailtrackacr91kia0`, storage account `nailtrackst91kia0`, blob container `nailtrack-images`, Static Web App origin `https://zealous-beach-08fa8781e.6.azurestaticapps.net`, environment `cae-nailtrack`, and container app `nailtrack-api`. Pass those names as parameters to override them. The script is safe to run again. It prints the ingress FQDN and the GitHub OIDC client id. It does not print storage keys.
 
-Other useful settings: `CORS_ORIGINS` (comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`), `SAS_URL_TTL_SECONDS`, `LOG_LEVEL`. Production `CORS_ORIGINS` must include the Static Web Apps origin (`https://<name>.azurestaticapps.net`, plus any custom domain). The browser calls the App Service directly. The PWA does not proxy `/api` in production.
-
-`opencv-python-headless` 5.0.0 is the build the pipeline was checked against (`GUI: NONE`). The hand model is `backend/models/hand_landmarker.task` (copied to `frontend/public/models/` for the live HUD).
+On `main`, GitHub Actions logs in with OIDC, runs `az acr build` for `backend/Dockerfile` (tags: the commit SHA and `latest`), then `az containerapp update` to that SHA. If `AZURE_RESOURCE_GROUP`, `AZURE_ACR_NAME`, or `AZURE_CONTAINERAPP_NAME` (or the OIDC secrets) are unset, that job prints a notice and exits successfully.
 
 ## Static Web Apps
 
-GitHub Actions (`.github/workflows/azure-deploy.yml`) runs backend pytest and frontend Vitest plus `npm run build` on pull requests. On `main` it zip-deploys `backend/` and uploads `frontend/` to Static Web Apps (`app_location: frontend`, `output_location: dist`).
+The same workflow runs backend pytest and frontend Vitest plus `npm run build` on pull requests. On `main` it uploads `frontend/` to Static Web Apps (`app_location: frontend`, `output_location: dist`). The PWA calls the Container Apps origin directly. Set `VITE_API_BASE_URL` to `https://<ingress-fqdn>` with no trailing slash and rebuild. For this single-user deployment set `VITE_AUTH_MODE=dev`.
 
 | Name | Kind | Purpose |
 | --- | --- | --- |
-| `AZURE_WEBAPP_NAME` | secret | App Service name |
-| `AZURE_WEBAPP_PUBLISH_PROFILE` | secret | Deployment Center → Download publish profile |
+| `AZURE_CLIENT_ID` | secret | Entra app id printed by the setup script |
+| `AZURE_TENANT_ID` | secret | Tenant id printed by the setup script |
+| `AZURE_SUBSCRIPTION_ID` | secret | Subscription id printed by the setup script |
 | `AZURE_STATIC_WEB_APPS_API_TOKEN` | secret | Static Web App → Manage deployment token |
-| `VITE_API_BASE_URL` | variable | App Service origin, no trailing slash. Baked in at build time |
-| `VITE_AUTH_MODE` | variable | `entra` in production |
-| `VITE_ENTRA_CLIENT_ID` | variable | SPA app (client) id |
+| `AZURE_RESOURCE_GROUP` | variable | `rg-nailtrack` |
+| `AZURE_ACR_NAME` | variable | `nailtrackacr91kia0` |
+| `AZURE_CONTAINERAPP_NAME` | variable | `nailtrack-api` |
+| `VITE_API_BASE_URL` | variable | `https://<container-app-fqdn>`, no trailing slash |
+| `VITE_AUTH_MODE` | variable | `dev` for now |
+| `VITE_ENTRA_CLIENT_ID` | variable | SPA app id, only when `VITE_AUTH_MODE=entra` |
 | `VITE_ENTRA_AUTHORITY` | variable | `https://<subdomain>.ciamlogin.com/<tenant-id>` |
 | `VITE_API_SCOPE` | variable | `api://<api-app-id>/access_as_user` |
 
-An OIDC deploy is the alternative to the publish profile. Create a federated credential for `repo:arubman/nailtrack-ai:ref:refs/heads/main`, then replace the API deploy step with `azure/login` using `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`.
-
-The SPA redirect URI is the Static Web Apps origin. The API app registration exposes the scope in `VITE_API_SCOPE` and the SPA is an authorized client. `ENTRA_AUDIENCE` on the API must include that API's client id.
+The federated credential subject is `repo:arubman/nailtrack-ai:ref:refs/heads/main`. The deploy job needs `id-token: write`.
 
 ## Deploy end to end
 
-1. Create the Entra External ID tenant apps: an API that exposes a scope, and a SPA whose redirect URI is the Static Web Apps origin.
-2. Create PostgreSQL and the private blob container. Run `alembic upgrade head` against that database.
-3. Turn on the App Service system-assigned identity. Assign Storage Blob Data Reader and Storage Blob Delegator. Set `AZURE_STORAGE_USE_MANAGED_IDENTITY=true` and `AZURE_STORAGE_ACCOUNT_NAME`. Add the Static Web Apps origin to the storage account CORS rules (`GET`, `HEAD`).
-4. Set the API app settings: `ENVIRONMENT=production`, `AUTH_MODE=entra`, the Entra ids, `DATABASE_URL`, and `CORS_ORIGINS` including the Static Web Apps origin.
-5. Deploy the API from `backend/Dockerfile` (recommended) or let the GitHub zip deploy use `startup.sh`.
-6. Create the Static Web App, store its deployment token as `AZURE_STATIC_WEB_APPS_API_TOKEN`, and set the `VITE_*` repository variables to the API origin and the SPA registration.
-7. Push `main` (or run the workflow) so the PWA is rebuilt with that API URL.
-8. Open the site, sign in, calibrate a finger with the printed ArUco card, then save a measurement. `/health` stays anonymous.
+1. `az login`, then run `.\infra\containerapps-setup.ps1`.
+2. Put the printed client id, tenant id, and subscription id in the GitHub secrets above. Add `AZURE_STATIC_WEB_APPS_API_TOKEN`.
+3. Set the GitHub variables, including `VITE_API_BASE_URL=https://<the printed FQDN>` and `VITE_AUTH_MODE=dev`.
+4. Push to `main` (or run the Deploy workflow). The first run builds the image and points the container app at it. The placeholder revision is not healthy on port 8000.
+5. Open `https://<fqdn>/health`. It stays anonymous. Then open the Static Web App, calibrate a finger with the printed ArUco card, and save a measurement.
+
+## App Service (paid subscriptions)
+
+When a plan with App Service quota is available, the same `backend/Dockerfile` is the image to run. Set `WEBSITES_PORT=8000`. Leave `WEB_CONCURRENCY` at 1 for SQLite, or raise it only when `DATABASE_URL` is PostgreSQL. Do not start the container with `startup.sh`.
+
+Zip deploy remains a fallback: publish the `backend/` directory so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. `startup.txt` is `bash startup.sh`, which apt-installs the MediaPipe libraries when the sandbox allows it, force-reinstalls headless OpenCV, and execs gunicorn. That path needs `AZURE_WEBAPP_NAME` and `AZURE_WEBAPP_PUBLISH_PROFILE`. It is not what the GitHub workflow does.
+
+`ENVIRONMENT=production` still requires `AUTH_MODE=entra`, PostgreSQL, and Azure Blob storage. Run `alembic upgrade head` for Postgres and set `AUTO_CREATE_TABLES=false`. An account-key connection string remains the local fallback when managed identity is off.
+
+## Threshold tuning
 
 Tune thresholds on a folder of real photos without changing the defaults:
 

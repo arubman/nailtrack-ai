@@ -1,4 +1,7 @@
-"""Liveness for Azure App Service. Unauthenticated on purpose.
+"""Liveness for Azure Container Apps and App Service. Unauthenticated on purpose.
+
+Container Apps probes GET /health. The route checks the database with SELECT 1
+and does not require an Entra token.
 
 Platform probes do not send an Entra token. Every /api/v1 route still resolves
 the caller through get_current_user. This route and the documentation pages

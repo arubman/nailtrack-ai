@@ -1,7 +1,8 @@
 """Blur, glare, and tilt checks on a submitted photo.
 
 Blur and glare run on the nail plate. Tilt uses the 3D DIP and tip from
-MediaPipe. A missing hand is a failure, not a pass.
+MediaPipe. A missing hand is reported, not treated as a flat pose. The client
+may store that photo with force_save. A missing nail is still a hard failure.
 """
 
 from __future__ import annotations

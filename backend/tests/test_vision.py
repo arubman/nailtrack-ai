@@ -98,7 +98,9 @@ def test_quality_gate_flags_blur_glare_tilt_and_missing_hand():
     missing = evaluate_quality(sharp, mask, None, settings)
     assert "RETAKE_NO_HAND" in missing.metrics.reasons
     assert missing.metrics.tilt_deg is None
-    assert blocks_save(list(missing.metrics.reasons), force_save=True)
+    assert not blocks_save(list(missing.metrics.reasons), force_save=True)
+    assert blocks_save(["RETAKE_NO_HAND"], force_save=False)
+    assert blocks_save(["RETAKE_NO_HAND", "RETAKE_NO_NAIL"], force_save=True)
     assert not blocks_save(["RETAKE_BLURRY"], force_save=True)
     assert blocks_save(["RETAKE_BLURRY"], force_save=False)
 
@@ -301,7 +303,7 @@ def test_calibrate_persists_millimetres_and_analyze_requires_a_hand(client, db, 
 
     rejected = client.post(
         "/api/v1/captures/analyze",
-        data={"finger_code": "R_INDEX", "force_save": "true"},
+        data={"finger_code": "R_INDEX", "force_save": "false"},
         files={"image": ("nail.jpg", encoded, "image/jpeg")},
     )
     assert rejected.status_code == 422
@@ -309,13 +311,23 @@ def test_calibrate_persists_millimetres_and_analyze_requires_a_hand(client, db, 
     assert body["passed"] is False
     assert "RETAKE_NO_HAND" in body["reasons"]
     assert body["metrics"]["hand_detected"] is False
-    assert any("hand" in message.lower() for message in body["messages"])
+    assert any("knuckle" in message.lower() for message in body["messages"])
 
-    # The drawn photo is not a hand, so force_save must not invent a capture.
     from sqlalchemy import func, select
     from app.models import NailCapture
 
     assert db.scalar(select(func.count()).select_from(NailCapture)) == 0
+
+    # A close-up can hide the palm. Saving anyway stores the photo and still
+    # records that no hand was detected.
+    saved = client.post(
+        "/api/v1/captures/analyze",
+        data={"finger_code": "R_INDEX", "force_save": "true"},
+        files={"image": ("nail.jpg", encoded, "image/jpeg")},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["quality"]["hand_detected"] is False
+    assert db.scalar(select(func.count()).select_from(NailCapture)) == 1
 
     # A capture saved by the same pipeline can accept a corrected mask over HTTP.
     analyzed = analyze_capture(

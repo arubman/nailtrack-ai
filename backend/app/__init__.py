@@ -1,0 +1,3 @@
+"""NailTrack AI backend (FastAPI)."""
+
+__version__ = "0.1.0"

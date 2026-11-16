@@ -1,22 +1,26 @@
-# Deploy the API (backend/) to Azure App Service and the PWA (frontend/) to
-# Azure Static Web Apps.
+# Deploy the API image to Azure Container Apps and the PWA to Static Web Apps.
 #
-# Backend secrets:
-#   AZURE_WEBAPP_NAME
-#   AZURE_WEBAPP_PUBLISH_PROFILE
-# OIDC alternative: federated credential for
-# repo:arubman/nailtrack-ai:ref:refs/heads/main, then azure/login with
-# AZURE_CLIENT_ID, AZURE_TENANT_ID, and AZURE_SUBSCRIPTION_ID.
+# API deploy (main only). Skipped with a notice when the variables are unset,
+# so forks and a repo that has not finished infra/containerapps-setup.ps1 stay green.
+# Secrets:
+#   AZURE_CLIENT_ID            Entra app (client) id for GitHub OIDC
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+# Variables:
+#   AZURE_RESOURCE_GROUP       e.g. rg-nailtrack
+#   AZURE_ACR_NAME             e.g. nailtrackacr91kia0
+#   AZURE_CONTAINERAPP_NAME    e.g. nailtrack-api
+# The federated credential subject is repo:arubman/nailtrack-ai:ref:refs/heads/main.
 #
 # Frontend secret:
 #   AZURE_STATIC_WEB_APPS_API_TOKEN   Static Web App → Manage deployment token
 # Frontend repository variables (baked into the production build):
-#   VITE_API_BASE_URL                 App Service origin, no trailing slash
-#   VITE_AUTH_MODE                    entra (or dev only for a private demo)
+#   VITE_API_BASE_URL                 Container Apps origin, no trailing slash
+#   VITE_AUTH_MODE                    dev for the single-user deployment, entra later
 #   VITE_ENTRA_CLIENT_ID
 #   VITE_ENTRA_AUTHORITY              https://<subdomain>.ciamlogin.com/<tenant-id>
 #   VITE_API_SCOPE                    api://<api-app-id>/access_as_user
-# The App Service setting CORS_ORIGINS must include the Static Web Apps origin.
+# The container app setting CORS_ORIGINS must include the Static Web Apps origin.
 name: Deploy
 
 on:
@@ -85,14 +89,64 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy backend to Azure App Service
-        uses: azure/webapps-deploy@v3
+      - name: Check Container Apps deploy configuration
+        id: config
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          AZURE_CONTAINERAPP_NAME: ${{ vars.AZURE_CONTAINERAPP_NAME }}
+        shell: bash
+        run: |
+          missing=""
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP AZURE_ACR_NAME AZURE_CONTAINERAPP_NAME; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Container Apps deploy skipped::Missing$missing. The API image was not built or deployed."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Log in to Azure
+        if: steps.config.outputs.ready == 'true'
+        uses: azure/login@v2
         with:
-          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: backend
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build the API image in ACR
+        if: steps.config.outputs.ready == 'true'
+        working-directory: backend
+        run: |
+          az acr build \
+            --registry "$AZURE_ACR_NAME" \
+            --image "nailtrack-api:${GITHUB_SHA}" \
+            --image "nailtrack-api:latest" \
+            --file Dockerfile \
+            .
+        env:
+          AZURE_ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+      - name: Update the container app
+        if: steps.config.outputs.ready == 'true'
+        run: |
+          az containerapp update \
+            --name "$AZURE_CONTAINERAPP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "${AZURE_ACR_NAME}.azurecr.io/nailtrack-api:${GITHUB_SHA}"
+        env:
+          AZURE_ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_CONTAINERAPP_NAME: ${{ vars.AZURE_CONTAINERAPP_NAME }}
 
   deploy-frontend:
     needs: frontend-test

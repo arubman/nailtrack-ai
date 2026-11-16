@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import DateTime, create_engine, event
 from sqlalchemy.engine import Engine
@@ -66,10 +67,29 @@ def _sqlite_foreign_keys(dbapi_connection: object, connection_record: object) ->
     cursor.close()
 
 
+def _ensure_sqlite_parent(url: str) -> None:
+    """Create the directory that holds a file-backed SQLite database.
+
+    Container Apps mounts Azure Files at /data. The mount can be empty on
+    first boot, and a local DATABASE_URL such as sqlite:////data/nailtrack.db
+    would otherwise fail before SQLite creates the file.
+    """
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        return
+    path = url[len(prefix) :].split("?", 1)[0]
+    if not path or path == ":memory:" or path.endswith(":memory:"):
+        return
+    parent = Path(path).parent
+    if str(parent) not in {"", "."}:
+        parent.mkdir(parents=True, exist_ok=True)
+
+
 def _make_engine(url: str) -> Engine:
     settings = get_settings()
     kwargs: dict[str, object] = {"echo": settings.sql_echo}
     if url.startswith("sqlite"):
+        _ensure_sqlite_parent(url)
         kwargs["connect_args"] = {"check_same_thread": False}
         if url in {"sqlite://", "sqlite:///:memory:"}:
             kwargs["poolclass"] = StaticPool

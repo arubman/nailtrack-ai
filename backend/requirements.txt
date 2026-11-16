@@ -11,6 +11,7 @@ pydantic>=2.10.0
 pydantic-settings>=2.7.0
 PyJWT[crypto]>=2.10.1
 azure-storage-blob>=12.24.0
+azure-identity>=1.19.0
 psycopg[binary]>=3.2.3
 # MediaPipe depends on opencv-contrib-python. Install this file, then reinstall
 # the headless build so App Service does not import a GUI OpenCV:

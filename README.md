@@ -4,7 +4,7 @@ NailTrack keeps a private photo record of fingernail growth, logs regimens you c
 
 NailTrack shares wellness observations only. It is not medical advice and does not diagnose, treat, or predict disease. A treatment's `velocity_modifier` is a number you set for your own forecast. The app does not claim that a supplement, oil, or coating changed your growth rate.
 
-The backend covers accounts, private storage, classical vision, and forecasts. The React PWA is still ahead. Measurements and forecasts are computed, not stubbed.
+The backend covers accounts, private storage, classical vision, and forecasts. The React PWA in `frontend/` is the installable client. Measurements and forecasts are computed, not stubbed.
 
 ## Layout
 
@@ -26,9 +26,11 @@ backend/
   alembic/              PostgreSQL (and SQLite) migrations
   scripts/tune_thresholds.py
   requirements.txt
-  startup.sh            App Service boot: libegl1, headless OpenCV, gunicorn
+  startup.sh            Zip-deploy fallback: apt libraries, headless OpenCV, gunicorn
   startup.txt           `bash startup.sh` so Oryx picks the script up
+  Dockerfile            Recommended App Service image (libraries already installed)
   runtime.txt           python-3.11
+frontend/               Vite + React + TypeScript PWA
 ```
 
 ## Local development
@@ -61,6 +63,17 @@ Copy `backend/.env.example` to `backend/.env` to override any of these. `.env` i
 cd backend
 pytest
 ```
+
+The PWA talks to that API. `VITE_AUTH_MODE=dev` matches the backend's dev user and sends no bearer token.
+
+```bash
+cd frontend
+npm ci
+npm test
+npm run dev
+```
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The dev server proxies `/api` to port 8000. Copy `frontend/.env.example` when you point the UI at another origin (`VITE_API_BASE_URL`). Production builds bake that URL in, so change it and rebuild.
 
 Alembic is optional locally because SQLite creates tables on startup. To exercise the migration instead:
 
@@ -205,27 +218,26 @@ A new capture updates `observed_velocity_mm_day` only when the nail is longer th
 
 ## Azure App Service
 
-Deploy the **`backend/`** directory as the site root so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. Stack: Python 3.11, Linux. `startup.txt` runs `bash startup.sh`, which:
+**Recommended:** build `backend/Dockerfile` and run that image. It is Python 3.11 slim with `libegl1`, `libgl1`, `libgles2`, `libglib2.0-0`, and `libgomp1` already installed, then `opencv-python-headless==5.0.0.93` force-reinstalled after MediaPipe so the GUI OpenCV build is not what `import cv2` loads. The container starts gunicorn directly. Nothing is apt-installed at boot.
 
-1. Installs `libegl1`, `libgl1`, `libgles2`, `libglib2.0-0`, and `libgomp1` when `apt-get` is available. MediaPipe's native library needs both EGL and `libGLESv2.so.2`.
-2. Reinstalls `opencv-python-headless==5.0.0.93` with `--no-deps` so MediaPipe's `opencv-contrib-python` dependency does not leave a GUI build on the import path.
-3. Starts gunicorn with a uvicorn worker on `${PORT:-8000}`.
-
-`startup.txt` is:
-
-```text
-gunicorn --bind 0.0.0.0:${PORT:-8000} --workers 2 --worker-class uvicorn.workers.UvicornWorker --timeout 120 --graceful-timeout 30 --keep-alive 5 --forwarded-allow-ips=* --access-logfile - --error-logfile - app.main:app
+```bash
+docker build -t nailtrack-api backend
+docker run --rm -p 8000:8000 --env-file backend/.env nailtrack-api
 ```
 
-Oryx runs that command in a shell, so `PORT` expands. The fallback is 8000, which matches App Service's default `WEBSITES_PORT`. Two workers are for PostgreSQL. Do not point this command at a SQLite file.
+On App Service, publish the image to a registry the app can pull, set `WEBSITES_PORT=8000`, and do not set a startup command that calls `startup.sh`.
+
+**Zip-deploy fallback:** deploy the `backend/` directory so Oryx finds `requirements.txt`, `runtime.txt`, and `startup.txt`. `startup.txt` is `bash startup.sh`. That script apt-installs the same libraries when the sandbox allows it, force-reinstalls headless OpenCV, then execs gunicorn on `${PORT:-8000}`. If apt is not permitted, the script continues and the process will fail until you switch to the container image. The GitHub Action `azure/webapps-deploy` publishes this zip. Two workers are for PostgreSQL. Do not point this command at a SQLite file.
 
 Production startup fails unless all of the following are true:
 
 - `ENVIRONMENT=production`
 - `AUTH_MODE=entra` and the Entra settings above
 - `DATABASE_URL` is PostgreSQL (`postgresql://` is rewritten to `postgresql+psycopg://`)
-- `AZURE_STORAGE_CONN_STRING` (or `AZURE_STORAGE_CONNECTION_STRING`) includes `AccountName` and `AccountKey`
+- Blob storage is configured (see below)
 - `AZURE_STORAGE_CONTAINER` (default `nailtrack-private`) is a private container
+
+Blob reads are short-lived read-only SAS URLs. Set `AZURE_STORAGE_USE_MANAGED_IDENTITY=true` and `AZURE_STORAGE_ACCOUNT_NAME` so the API signs **user-delegation SAS** with `DefaultAzureCredential` (the App Service managed identity). Grant that identity **Storage Blob Data Reader** and **Storage Blob Delegator** on the account. The browser fetches those SAS URLs, so the storage account CORS list must allow the Static Web Apps origin for `GET` and `HEAD`. A connection string with `AccountName` and `AccountKey` remains the local and dev fallback, used only when the managed-identity flag is off. If both are set, user delegation wins.
 
 Run migrations as a deploy step, not via `create_all`:
 
@@ -235,18 +247,39 @@ alembic upgrade head
 
 Set `AUTO_CREATE_TABLES=false` in production (that is already the default when the URL is Postgres).
 
-Other useful settings: `CORS_ORIGINS` (comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`), `SAS_URL_TTL_SECONDS`, `LOG_LEVEL`.
+Other useful settings: `CORS_ORIGINS` (comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`), `SAS_URL_TTL_SECONDS`, `LOG_LEVEL`. Production `CORS_ORIGINS` must include the Static Web Apps origin (`https://<name>.azurestaticapps.net`, plus any custom domain). The browser calls the App Service directly. The PWA does not proxy `/api` in production.
 
-`opencv-python-headless` 5.0.0 is the build the pipeline was checked against (`GUI: NONE`). The hand model is `backend/models/hand_landmarker.task`.
+`opencv-python-headless` 5.0.0 is the build the pipeline was checked against (`GUI: NONE`). The hand model is `backend/models/hand_landmarker.task` (copied to `frontend/public/models/` for the live HUD).
 
-GitHub Actions workflow `.github/workflows/azure-deploy.yml` runs the tests on pull requests and, on `main`, deploys `backend/` with `azure/webapps-deploy`. Set these repository secrets:
+## Static Web Apps
 
-| Secret | Purpose |
-| --- | --- |
-| `AZURE_WEBAPP_NAME` | App Service name |
-| `AZURE_WEBAPP_PUBLISH_PROFILE` | Deployment Center → Download publish profile |
+GitHub Actions (`.github/workflows/azure-deploy.yml`) runs backend pytest and frontend Vitest plus `npm run build` on pull requests. On `main` it zip-deploys `backend/` and uploads `frontend/` to Static Web Apps (`app_location: frontend`, `output_location: dist`).
 
-An OIDC deploy is the alternative if you would rather not store a publish profile. Create a federated credential for `repo:arubman/nailtrack-ai:ref:refs/heads/main`, then replace the deploy step with `azure/login` using `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`. The workflow comments point at that swap. The frontend Static Web App job belongs in Phase 4.
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `AZURE_WEBAPP_NAME` | secret | App Service name |
+| `AZURE_WEBAPP_PUBLISH_PROFILE` | secret | Deployment Center → Download publish profile |
+| `AZURE_STATIC_WEB_APPS_API_TOKEN` | secret | Static Web App → Manage deployment token |
+| `VITE_API_BASE_URL` | variable | App Service origin, no trailing slash. Baked in at build time |
+| `VITE_AUTH_MODE` | variable | `entra` in production |
+| `VITE_ENTRA_CLIENT_ID` | variable | SPA app (client) id |
+| `VITE_ENTRA_AUTHORITY` | variable | `https://<subdomain>.ciamlogin.com/<tenant-id>` |
+| `VITE_API_SCOPE` | variable | `api://<api-app-id>/access_as_user` |
+
+An OIDC deploy is the alternative to the publish profile. Create a federated credential for `repo:arubman/nailtrack-ai:ref:refs/heads/main`, then replace the API deploy step with `azure/login` using `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`.
+
+The SPA redirect URI is the Static Web Apps origin. The API app registration exposes the scope in `VITE_API_SCOPE` and the SPA is an authorized client. `ENTRA_AUDIENCE` on the API must include that API's client id.
+
+## Deploy end to end
+
+1. Create the Entra External ID tenant apps: an API that exposes a scope, and a SPA whose redirect URI is the Static Web Apps origin.
+2. Create PostgreSQL and the private blob container. Run `alembic upgrade head` against that database.
+3. Turn on the App Service system-assigned identity. Assign Storage Blob Data Reader and Storage Blob Delegator. Set `AZURE_STORAGE_USE_MANAGED_IDENTITY=true` and `AZURE_STORAGE_ACCOUNT_NAME`. Add the Static Web Apps origin to the storage account CORS rules (`GET`, `HEAD`).
+4. Set the API app settings: `ENVIRONMENT=production`, `AUTH_MODE=entra`, the Entra ids, `DATABASE_URL`, and `CORS_ORIGINS` including the Static Web Apps origin.
+5. Deploy the API from `backend/Dockerfile` (recommended) or let the GitHub zip deploy use `startup.sh`.
+6. Create the Static Web App, store its deployment token as `AZURE_STATIC_WEB_APPS_API_TOKEN`, and set the `VITE_*` repository variables to the API origin and the SPA registration.
+7. Push `main` (or run the workflow) so the PWA is rebuilt with that API URL.
+8. Open the site, sign in, calibrate a finger with the printed ArUco card, then save a measurement. `/health` stays anonymous.
 
 Tune thresholds on a folder of real photos without changing the defaults:
 
@@ -263,16 +296,14 @@ python scripts/tune_thresholds.py ./sample_nails --csv metrics.csv
 - Alembic upgrade, an ORM insert against the migrated schema, and downgrade
 - dev-mode treatments (create, list, patch, delete, another user's id hidden)
 - Entra JWT checks (audience, issuer, tenant, scope, authorized party, expiry, `alg=none`) with a locally signed key, and the 401 path when auth mode is `entra`
-- finger listing scoped to the caller, the authenticated media route, and a read-only SAS URL
+- finger listing scoped to the caller, the authenticated media route, account-key SAS, and user-delegation SAS when a credential is configured
+
+`npm test` from `frontend/` covers the API client (bearer token, dev mode with no token, raw 422 body), mesh interpolation, and slider frame selection from −90 to +90.
 - production settings refusing dev auth, SQLite, and local disk
 - synthetic nails and cards: class order, ray-cast lengths, ID-1 scale, Von Kries Lab, Gabor orientation, homography recovery, ECC affine fallback
 - a blank frame returns no MediaPipe hand, and analyze then responds 422 `RETAKE_NO_HAND` even with `force_save`
 - headless OpenCV still exposes GrabCut, ECC, Gabor, and SIFT
 
-## What Phase 4 still owns
+## Still open
 
-- The React/TypeScript PWA: camera HUD, the −90..+90 scrubber that interpolates `mesh` vertices, and the treatment logger wired to this API.
-- Add the Static Web Apps job to `.github/workflows/azure-deploy.yml`.
-- Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) with `scripts/tune_thresholds.py` once 10–20 real nail photos exist. The classical segmenter and spot detector will need that set; corrected masks are already stored beside the automatic ones.
-- Account-key SAS can later move to user-delegation SAS and a managed identity.
-- If the App Service image cannot run `apt-get` during startup, use a custom container that already has `libegl1` and `libgles2`. `startup.sh` continues when apt fails and still forces the headless OpenCV reinstall.
+Confirm `GABOR_ENERGY_FLOOR` (default `1e-4`) with `scripts/tune_thresholds.py` once 10–20 real nail photos exist. The classical segmenter and spot detector may need that set. Corrected masks are already stored beside the automatic ones.

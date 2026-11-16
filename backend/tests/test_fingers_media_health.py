@@ -147,3 +147,27 @@ def test_azure_read_url_is_a_short_lived_read_sas():
     assert "sp=rw" not in query
     assert "sp=racw" not in query
     assert "sr=b" in query
+
+
+def test_user_delegation_sas_is_used_when_a_credential_is_configured(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_sas(**kwargs):
+        captured.update(kwargs)
+        return "sig=delegation"
+
+    monkeypatch.setattr("azure.storage.blob.generate_blob_sas", fake_sas)
+    storage = AzureBlobStorage(
+        container="nailtrack-private",
+        ttl_seconds=120,
+        credential=object(),
+        account_name="nailtrackprod",
+    )
+    storage._user_delegation_key = lambda: "delegation-key"  # type: ignore[method-assign]
+    url = storage.read_url("users/abc/captures/raw.jpg", expires_in=60)
+    assert url.startswith(
+        "https://nailtrackprod.blob.core.windows.net/nailtrack-private/users/abc/captures/raw.jpg?"
+    )
+    assert captured["user_delegation_key"] == "delegation-key"
+    assert "account_key" not in captured
+    assert "sig=delegation" in url

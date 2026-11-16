@@ -469,6 +469,7 @@ class TimelineFrame(BaseModel):
     kind: Literal["history", "today", "forecast"]
     capture_id: uuid.UUID | None = None
     image: ImageLink | None = None
+    mask: ImageLink | None = None
     delta_length_mm: float = 0.0
     nail_bed_length_mm: float | None = None
     free_margin_length_mm: float | None = None

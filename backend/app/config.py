@@ -60,6 +60,8 @@ class Settings(BaseSettings):
             "AZURE_STORAGE_CONNECTION_STRING",
         ),
     )
+    azure_storage_use_managed_identity: bool = False
+    azure_storage_account_name: str | None = None
     azure_storage_container: str = "nailtrack-private"
     sas_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     local_storage_path: str = "data/uploads"
@@ -138,6 +140,7 @@ class Settings(BaseSettings):
         "entra_required_scope",
         "entra_allowed_azp",
         "azure_storage_connection_string",
+        "azure_storage_account_name",
         "dev_user_subject",
         "dev_user_email",
         "dev_user_display_name",
@@ -227,7 +230,9 @@ class Settings(BaseSettings):
             return "local"
         if self.storage_backend == "azure":
             return "azure"
-        if self.azure_storage_connection_string:
+        if self.azure_storage_connection_string or (
+            self.azure_storage_use_managed_identity and self.azure_storage_account_name
+        ):
             return "azure"
         return "local"
 
@@ -250,8 +255,8 @@ class Settings(BaseSettings):
                 problems.append("DATABASE_URL must be PostgreSQL when ENVIRONMENT=production")
             if self.resolved_storage_backend != "azure":
                 problems.append(
-                    "AZURE_STORAGE_CONN_STRING is required when ENVIRONMENT=production "
-                    "(local disk is ephemeral and is not the private image store)"
+                    "Production needs Azure Blob storage via AZURE_STORAGE_CONN_STRING "
+                    "or AZURE_STORAGE_USE_MANAGED_IDENTITY with AZURE_STORAGE_ACCOUNT_NAME"
                 )
         if self.auth_mode == "dev":
             if not self.dev_user_subject:
@@ -271,22 +276,41 @@ class Settings(BaseSettings):
                 problems.append(
                     "ENTRA_JWKS_URL or ENTRA_TENANT_SUBDOMAIN is required when AUTH_MODE=entra"
                 )
-        if self.resolved_storage_backend == "azure" and not self.azure_storage_connection_string:
-            problems.append("STORAGE_BACKEND=azure requires AZURE_STORAGE_CONN_STRING")
-        elif self.azure_storage_connection_string and self.resolved_storage_backend == "azure":
-            parts = {
-                segment.split("=", 1)[0]
-                for segment in self.azure_storage_connection_string.split(";")
-                if "=" in segment
-            }
-            if "AccountName" not in parts or "AccountKey" not in parts:
+        if self.resolved_storage_backend == "azure":
+            if self.azure_storage_use_managed_identity:
+                if not (self.azure_storage_account_name or _account_name(self.azure_storage_connection_string)):
+                    problems.append(
+                        "AZURE_STORAGE_ACCOUNT_NAME is required when "
+                        "AZURE_STORAGE_USE_MANAGED_IDENTITY is true"
+                    )
+            elif not self.azure_storage_connection_string:
                 problems.append(
-                    "AZURE_STORAGE_CONN_STRING must include AccountName and AccountKey "
-                    "so the API can sign short-lived read SAS URLs"
+                    "STORAGE_BACKEND=azure requires AZURE_STORAGE_CONN_STRING "
+                    "or AZURE_STORAGE_USE_MANAGED_IDENTITY"
                 )
+            else:
+                parts = {
+                    segment.split("=", 1)[0]
+                    for segment in self.azure_storage_connection_string.split(";")
+                    if "=" in segment
+                }
+                if "AccountName" not in parts or "AccountKey" not in parts:
+                    problems.append(
+                        "AZURE_STORAGE_CONN_STRING must include AccountName and AccountKey "
+                        "when user-delegation SAS is not configured"
+                    )
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+
+def _account_name(connection_string: str | None) -> str | None:
+    if not connection_string:
+        return None
+    for segment in connection_string.split(";"):
+        if segment.startswith("AccountName="):
+            return segment.split("=", 1)[1] or None
+    return None
 
 
 @lru_cache
